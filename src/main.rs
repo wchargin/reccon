@@ -5,14 +5,24 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 struct ActiveSegment {
+    /// Unique ID for this segment, for logging/etc. purposes.
+    id: String,
+    /// Filename used while this segment is still being actively recorded.
+    part_filename: PathBuf,
+    /// Filename used once this segment has finished recording.
+    final_filename: PathBuf,
+    /// `sox(1)` subprocess writing to the file at `part_filename`.
     encoder: Child,
-    filename: PathBuf,
+    /// Number of chunks that have been fed to `encoder` to far.
     total_chunks: u32,
+    /// Length of the longest suffix of chunks below the quiet threshold.
     consecutive_quiet_chunks: u32,
 }
 const CHUNK_SIZE: usize = 16384;
 const MAX_TOTAL_CHUNKS: u32 = duration_to_chunks(Duration::from_secs(60 * 10));
 const MAX_QUIET_CHUNKS: u32 = duration_to_chunks(Duration::from_secs(5));
+
+const PART_SUFFIX: &str = ".part";
 
 const RAW_AUDIO_ARGS: &[&str] = &[
     "-L", "-t", "raw", "-c", "1", "-e", "signed", "-b", "16", "-r", "48k",
@@ -39,7 +49,8 @@ fn main() {
     std::thread::spawn(move || {
         while let Ok(mut seg) = rx.recv() {
             seg.encoder.wait().expect("encoder.wait");
-            println!("finishing segment {}", seg.filename.display());
+            println!("finishing segment {}", seg.id);
+            std::fs::rename(seg.part_filename, seg.final_filename).expect("file gone");
         }
     });
     loop {
@@ -53,20 +64,33 @@ fn main() {
             (true, None) => continue,
             (_, Some(seg)) => seg,
             (false, None) => {
-                let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                let filename = PathBuf::from(format!("/tmp/recording-{}.flac", now));
-                println!("starting segment {}", now);
+                let now = chrono::Local::now();
+                let id = now.format("%Y%m%dT%H%M%S").to_string();
+                let date_part = &id[0..8];
+                let base_dir = PathBuf::from_iter(["/tmp", date_part]);
+                match std::fs::create_dir(&base_dir) {
+                    Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                        panic!("failed to create base directory: {}", e);
+                    }
+                    _ => {}
+                };
+                let part_filename = base_dir.join(&format!("recording-{}.flac{}", id, PART_SUFFIX));
+                let final_filename = base_dir.join(&format!("recording-{}.flac", id));
+                println!("starting segment {}", id);
                 let sp_sox = Command::new("sox")
                     .arg("-q")
                     .args(RAW_AUDIO_ARGS)
                     .arg("-")
-                    .arg(&filename)
+                    .args(&["-t", "flac"])
+                    .arg(&part_filename)
                     .stdin(Stdio::piped())
                     .spawn()
                     .expect("spawn[sox]");
                 seg = Some(ActiveSegment {
+                    id,
                     encoder: sp_sox,
-                    filename,
+                    part_filename,
+                    final_filename,
                     total_chunks: 0,
                     consecutive_quiet_chunks: 0,
                 });
