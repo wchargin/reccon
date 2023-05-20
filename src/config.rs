@@ -1,0 +1,10 @@
+use std::path::PathBuf;
+
+use serde::Deserialize;
+
+pub const DEFAULT_FILENAME: &str = "reckless.toml";
+
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    pub storage_dir: Option<PathBuf>,
+}

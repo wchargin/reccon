@@ -1,8 +1,12 @@
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
+
+use anyhow::Context;
+
+mod config;
 
 struct ActiveSegment {
     /// Unique ID for this segment, for logging/etc. purposes.
@@ -34,7 +38,32 @@ const fn duration_to_chunks(d: Duration) -> u32 {
     (d.as_millis() * BYTES_PER_MS as u128 / CHUNK_SIZE as u128) as u32
 }
 
-fn main() {
+fn read_config() -> anyhow::Result<config::Config> {
+    let arg = std::env::args_os().nth(1);
+    let config_file = arg
+        .as_ref()
+        .map(|s| s.as_os_str())
+        .unwrap_or_else(|| std::ffi::OsStr::new(config::DEFAULT_FILENAME));
+    let config_file = Path::new(config_file);
+    let contents = match std::fs::read(config_file) {
+        Ok(c) => c,
+        // If no config file was explicitly given and the default wasn't found, behave as if the
+        // config file were empty, producing a "default" config.
+        Err(e) if e.kind() == io::ErrorKind::NotFound && arg.is_none() => Vec::new(),
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("Failed to read config file from {}", config_file.display())
+            })
+        }
+    };
+    let contents = String::from_utf8(contents).context("Invalid UTF-8 in config file")?;
+    toml::from_str(&contents).context("Invalid config")
+}
+
+fn main() -> anyhow::Result<()> {
+    let config = read_config()?;
+    let storage_dir = config.storage_dir.unwrap_or_else(|| PathBuf::from("/tmp"));
+
     let (tx, rx) = mpsc::channel::<ActiveSegment>();
     let mut sp_rec = Command::new("rec")
         .arg("-q")
@@ -67,9 +96,9 @@ fn main() {
                 let now = chrono::Local::now();
                 let id = now.format("%Y%m%dT%H%M%S").to_string();
                 let date_part = &id[0..8];
-                let base_dir = PathBuf::from_iter(["/tmp", date_part]);
+                let base_dir = storage_dir.join(date_part);
                 match std::fs::create_dir(&base_dir) {
-                    Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                    Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
                         panic!("failed to create base directory: {}", e);
                     }
                     _ => {}
@@ -120,6 +149,8 @@ fn main() {
             break;
         }
     }
+
+    Ok(())
 }
 
 fn is_quiet(raw_audio: &[u8]) -> bool {
