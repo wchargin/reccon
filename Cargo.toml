@@ -12,4 +12,5 @@ env_logger = "0.10.0"
 gcp_auth = "0.8.0"
 log = "0.4.17"
 serde = "1.0.163"
+tokio = { version = "1.28.1", features = ["full"] }
 toml = "0.7.4"
