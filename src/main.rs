@@ -125,6 +125,7 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to read chunk from rec(1) pipe")?;
         let is_quiet = is_quiet(&chunk, threshold);
         let mut cur_seg = match (is_quiet, &mut seg) {
+            (true, None) if chunk.is_empty() => break,
             (true, None) => continue,
             (_, Some(seg)) => seg,
             (false, None) => {
@@ -202,6 +203,6 @@ fn is_quiet(raw_audio: &[u8], threshold: i16) -> bool {
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .map(|z| z.abs())
         .max()
-        .expect("empty chunk");
+        .unwrap_or(0);
     max_sample <= threshold
 }
