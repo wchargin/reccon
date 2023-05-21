@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Context;
+use log::{debug, error, info, warn};
 
 mod config;
 
@@ -61,6 +62,9 @@ fn read_config() -> anyhow::Result<config::Config> {
 }
 
 fn main() -> anyhow::Result<()> {
+    use env_logger::{Builder, Env};
+    Builder::from_env(Env::default().default_filter_or(log::LevelFilter::Info.to_string())).init();
+
     let config = read_config()?;
     let threshold = (config.threshold.unwrap_or(0.25).clamp(0.0, 1.0) * f64::from(i16::MAX)) as i16;
     let storage_dir = config
@@ -84,15 +88,21 @@ fn main() -> anyhow::Result<()> {
         .arg("-")
         .stdout(Stdio::piped())
         .spawn()
-        .expect("spawn[rec]");
+        .context("Failed to spawn rec(1); is SoX installed?")?;
     let mut pipe = sp_rec.stdout.take().unwrap();
     let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_SIZE);
     let mut seg: Option<ActiveSegment> = None;
     std::thread::spawn(move || {
         while let Ok(mut seg) = rx.recv() {
-            seg.encoder.wait().expect("encoder.wait");
-            println!("finishing segment {}", seg.id);
-            std::fs::rename(seg.part_filename, seg.final_filename).expect("file gone");
+            info!("Finishing segment {}", seg.id);
+            match seg.encoder.wait() {
+                Ok(st) if st.success() => {}
+                Ok(st) => error!("Encoder for segment {} exited unhealthy: {}", seg.id, st),
+                Err(e) => error!("Failed to reap encoder for segment {}: {}", seg.id, e),
+            }
+            if let Err(e) = std::fs::rename(seg.part_filename, seg.final_filename) {
+                warn!("Failed to finalize filename for segment {}: {}", seg.id, e);
+            }
         }
     });
     loop {
@@ -100,7 +110,7 @@ fn main() -> anyhow::Result<()> {
         (&mut pipe)
             .take(u64::try_from(CHUNK_SIZE).unwrap())
             .read_to_end(&mut chunk)
-            .expect("pipe.take(...).read");
+            .context("Failed to read chunk from rec(1) pipe")?;
         let is_quiet = is_quiet(&chunk, threshold);
         let mut cur_seg = match (is_quiet, &mut seg) {
             (true, None) => continue,
@@ -111,7 +121,7 @@ fn main() -> anyhow::Result<()> {
                 let part_filename =
                     storage_dir.join(&format!("recording-{}.flac{}", id, PART_SUFFIX));
                 let final_filename = storage_dir.join(&format!("recording-{}.flac", id));
-                println!("starting segment {}", id);
+                info!("Starting segment {}", id);
                 let sp_sox = Command::new("sox")
                     .arg("-q")
                     .args(RAW_AUDIO_ARGS)
@@ -120,7 +130,7 @@ fn main() -> anyhow::Result<()> {
                     .arg(&part_filename)
                     .stdin(Stdio::piped())
                     .spawn()
-                    .expect("spawn[sox]");
+                    .context("Failed to spawn sox(1)")?;
                 seg = Some(ActiveSegment {
                     id,
                     encoder: sp_sox,
@@ -133,20 +143,35 @@ fn main() -> anyhow::Result<()> {
             }
         };
         let encoder_stdin = &mut cur_seg.encoder.stdin;
-        encoder_stdin
-            .as_mut()
-            .unwrap()
-            .write_all(&chunk)
-            .expect("write to encoder");
-        cur_seg.total_chunks += 1;
+        let write_failed = match encoder_stdin.as_mut().unwrap().write_all(&chunk) {
+            Ok(_) => {
+                cur_seg.total_chunks += 1;
+                false
+            }
+            Err(e) => {
+                error!(
+                    "Failed to write chunk {} to encoder: {}",
+                    cur_seg.total_chunks + 1,
+                    e
+                );
+                true
+            }
+        };
         if is_quiet {
+            if cur_seg.consecutive_quiet_chunks == 0 {
+                debug!("Mic is quiet");
+            }
             cur_seg.consecutive_quiet_chunks += 1;
         } else {
+            if cur_seg.consecutive_quiet_chunks > 0 {
+                debug!("Mic is hot");
+            }
             cur_seg.consecutive_quiet_chunks = 0;
         }
         if cur_seg.total_chunks >= MAX_TOTAL_CHUNKS
             || cur_seg.consecutive_quiet_chunks >= MAX_QUIET_CHUNKS
             || chunk.is_empty()
+            || write_failed
         {
             encoder_stdin.take();
             tx.send(seg.take().unwrap()).expect("tx.send");
