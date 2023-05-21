@@ -62,7 +62,19 @@ fn read_config() -> anyhow::Result<config::Config> {
 
 fn main() -> anyhow::Result<()> {
     let config = read_config()?;
-    let storage_dir = config.storage_dir.unwrap_or_else(|| PathBuf::from("/tmp"));
+    let storage_dir = config
+        .storage_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("recordings"));
+    match std::fs::create_dir(&storage_dir) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+            anyhow::bail!(
+                "Failed to create storage directory {}: {}",
+                storage_dir.display(),
+                e
+            );
+        }
+        _ => {}
+    };
 
     let (tx, rx) = mpsc::channel::<ActiveSegment>();
     let mut sp_rec = Command::new("rec")
@@ -95,16 +107,9 @@ fn main() -> anyhow::Result<()> {
             (false, None) => {
                 let now = chrono::Local::now();
                 let id = now.format("%Y%m%dT%H%M%S").to_string();
-                let date_part = &id[0..8];
-                let base_dir = storage_dir.join(date_part);
-                match std::fs::create_dir(&base_dir) {
-                    Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
-                        panic!("failed to create base directory: {}", e);
-                    }
-                    _ => {}
-                };
-                let part_filename = base_dir.join(&format!("recording-{}.flac{}", id, PART_SUFFIX));
-                let final_filename = base_dir.join(&format!("recording-{}.flac", id));
+                let part_filename =
+                    storage_dir.join(&format!("recording-{}.flac{}", id, PART_SUFFIX));
+                let final_filename = storage_dir.join(&format!("recording-{}.flac", id));
                 println!("starting segment {}", id);
                 let sp_sox = Command::new("sox")
                     .arg("-q")
