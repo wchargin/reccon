@@ -58,7 +58,8 @@ fn read_config() -> anyhow::Result<config::Config> {
         }
     };
     let contents = String::from_utf8(contents).context("Invalid UTF-8 in config file")?;
-    toml::from_str(&contents).context("Invalid config")
+    toml::from_str(&contents)
+        .with_context(|| format!("Invalid config in {}", config_file.display()))
 }
 
 fn main() -> anyhow::Result<()> {
