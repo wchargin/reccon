@@ -1,7 +1,6 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -62,6 +61,21 @@ fn read_config() -> anyhow::Result<config::Config> {
         .with_context(|| format!("Invalid config in {}", config_file.display()))
 }
 
+async fn finish_segment(mut seg: ActiveSegment) {
+    info!("Finishing segment {}", seg.id);
+    match tokio::task::spawn_blocking(move || seg.encoder.wait())
+        .await
+        .unwrap()
+    {
+        Ok(st) if st.success() => {}
+        Ok(st) => error!("Encoder for segment {} exited unhealthy: {}", seg.id, st),
+        Err(e) => error!("Failed to reap encoder for segment {}: {}", seg.id, e),
+    }
+    if let Err(e) = std::fs::rename(seg.part_filename, seg.final_filename) {
+        warn!("Failed to finalize filename for segment {}: {}", seg.id, e);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     use env_logger::{Builder, Env};
     Builder::from_env(Env::default().default_filter_or(log::LevelFilter::Info.to_string())).init();
@@ -82,7 +96,17 @@ fn main() -> anyhow::Result<()> {
         _ => {}
     };
 
-    let (tx, rx) = mpsc::channel::<ActiveSegment>();
+    let num_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(
+            num_cpus.saturating_sub(2) + 1, // leave one for the main thread
+        )
+        .build()
+        .context("Failed to start async runtime")?;
+
     let mut sp_rec = Command::new("rec")
         .arg("-q")
         .args(RAW_AUDIO_ARGS)
@@ -93,19 +117,6 @@ fn main() -> anyhow::Result<()> {
     let mut pipe = sp_rec.stdout.take().unwrap();
     let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_SIZE);
     let mut seg: Option<ActiveSegment> = None;
-    std::thread::spawn(move || {
-        while let Ok(mut seg) = rx.recv() {
-            info!("Finishing segment {}", seg.id);
-            match seg.encoder.wait() {
-                Ok(st) if st.success() => {}
-                Ok(st) => error!("Encoder for segment {} exited unhealthy: {}", seg.id, st),
-                Err(e) => error!("Failed to reap encoder for segment {}: {}", seg.id, e),
-            }
-            if let Err(e) = std::fs::rename(seg.part_filename, seg.final_filename) {
-                warn!("Failed to finalize filename for segment {}: {}", seg.id, e);
-            }
-        }
-    });
     loop {
         chunk.clear();
         (&mut pipe)
@@ -175,7 +186,7 @@ fn main() -> anyhow::Result<()> {
             || write_failed
         {
             encoder_stdin.take();
-            tx.send(seg.take().unwrap()).expect("tx.send");
+            rt.spawn(finish_segment(seg.take().unwrap()));
         }
         if chunk.is_empty() {
             break;
