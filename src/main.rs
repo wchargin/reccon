@@ -62,6 +62,7 @@ fn read_config() -> anyhow::Result<config::Config> {
 
 fn main() -> anyhow::Result<()> {
     let config = read_config()?;
+    let threshold = (config.threshold.unwrap_or(0.25).clamp(0.0, 1.0) * f64::from(i16::MAX)) as i16;
     let storage_dir = config
         .storage_dir
         .unwrap_or_else(|| std::env::temp_dir().join("recordings"));
@@ -100,7 +101,7 @@ fn main() -> anyhow::Result<()> {
             .take(u64::try_from(CHUNK_SIZE).unwrap())
             .read_to_end(&mut chunk)
             .expect("pipe.take(...).read");
-        let is_quiet = is_quiet(&chunk);
+        let is_quiet = is_quiet(&chunk, threshold);
         let mut cur_seg = match (is_quiet, &mut seg) {
             (true, None) => continue,
             (_, Some(seg)) => seg,
@@ -158,13 +159,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn is_quiet(raw_audio: &[u8]) -> bool {
+fn is_quiet(raw_audio: &[u8], threshold: i16) -> bool {
     let max_sample = raw_audio
         .chunks(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .map(|z| z.abs())
         .max()
         .expect("empty chunk");
-    const QUIET_THRESHOLD: i16 = i16::MAX / 4;
-    max_sample <= QUIET_THRESHOLD
+    max_sample <= threshold
 }
