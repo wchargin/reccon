@@ -144,15 +144,14 @@ fn main() -> anyhow::Result<()> {
                     .stdin(Stdio::piped())
                     .spawn()
                     .context("Failed to spawn sox(1)")?;
-                seg = Some(ActiveSegment {
+                seg.insert(ActiveSegment {
                     id,
                     encoder: sp_sox,
                     part_filename,
                     final_filename,
                     total_chunks: 0,
                     consecutive_quiet_chunks: 0,
-                });
-                seg.as_mut().unwrap()
+                })
             }
         };
         let encoder_stdin = &mut cur_seg.encoder.stdin;
