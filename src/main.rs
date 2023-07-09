@@ -122,12 +122,14 @@ fn main() -> anyhow::Result<()> {
     };
 
     // for testing...
-    if let Some(gcs::GcsContext { ref auth, .. }) = gcs {
-        const SCOPE: &str = "https://www.googleapis.com/auth/devstorage.read_write";
-        let token = rt
-            .block_on(auth.get_token(&[SCOPE]))
-            .context("getting token")?;
-        dbg!(token);
+    if let Some(gcs) = gcs {
+        let client = reqwest::Client::new();
+        rt.block_on(gcs.put(
+            &client,
+            "reckless-test/test-obj",
+            "hey\n".as_bytes().to_vec(),
+            "application/x-test",
+        ))?;
     }
 
     let mut sp_rec = Command::new("rec")
