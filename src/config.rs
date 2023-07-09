@@ -8,4 +8,5 @@ pub const DEFAULT_FILENAME: &str = "reckless.toml";
 pub struct Config {
     pub storage_dir: Option<PathBuf>,
     pub threshold: Option<f64>,
+    pub gcs_bucket: Option<String>,
 }

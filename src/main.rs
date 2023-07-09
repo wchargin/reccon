@@ -7,6 +7,7 @@ use anyhow::Context;
 use log::{debug, error, info, warn};
 
 mod config;
+mod gcs;
 
 struct ActiveSegment {
     /// Unique ID for this segment, for logging/etc. purposes.
@@ -80,7 +81,7 @@ fn main() -> anyhow::Result<()> {
     use env_logger::{Builder, Env};
     Builder::from_env(Env::default().default_filter_or(log::LevelFilter::Info.to_string())).init();
 
-    let config = read_config()?;
+    let mut config = read_config()?;
     let threshold = (config.threshold.unwrap_or(0.25).clamp(0.0, 1.0) * f64::from(i16::MAX)) as i16;
     let storage_dir = config
         .storage_dir
@@ -106,6 +107,28 @@ fn main() -> anyhow::Result<()> {
         )
         .build()
         .context("Failed to start async runtime")?;
+
+    let gcs = match config.gcs_bucket.take() {
+        None => None,
+        Some(bucket) => Some(rt.block_on(async {
+            let path: gcs::GcsPath = bucket.parse()?;
+            let auth = gcp_auth::AuthenticationManager::new()
+                .await
+                .with_context(|| {
+                    format!("GCS bucket specified ({bucket}) but no valid credentials found")
+                })?;
+            Ok::<_, anyhow::Error>(gcs::GcsContext { path, auth })
+        })?),
+    };
+
+    // for testing...
+    if let Some(gcs::GcsContext { ref auth, .. }) = gcs {
+        const SCOPE: &str = "https://www.googleapis.com/auth/devstorage.read_write";
+        let token = rt
+            .block_on(auth.get_token(&[SCOPE]))
+            .context("getting token")?;
+        dbg!(token);
+    }
 
     let mut sp_rec = Command::new("rec")
         .arg("-q")
