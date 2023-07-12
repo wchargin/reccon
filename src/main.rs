@@ -10,6 +10,11 @@ use log::{debug, error, info, trace};
 mod config;
 mod gcs;
 
+struct PendingSegment {
+    id: String,
+    consecutive_hot_chunks: u32,
+    // buffer of hot chunks is persisted externally
+}
 struct ActiveSegment {
     /// Unique ID for this segment, for logging/etc. purposes.
     id: String,
@@ -28,6 +33,7 @@ struct ActiveSegment {
 }
 const CHUNK_SIZE: usize = 16384;
 const MAX_TOTAL_CHUNKS: u32 = duration_to_chunks(Duration::from_secs(60 * 10));
+const MIN_HOT_CHUNKS: u32 = duration_to_chunks(Duration::from_secs(1));
 const MAX_QUIET_CHUNKS: u32 = duration_to_chunks(Duration::from_secs(5));
 
 const PART_SUFFIX: &str = ".part";
@@ -169,7 +175,14 @@ fn main() -> anyhow::Result<()> {
         .context("Failed to spawn rec(1); is SoX installed?")?;
     let mut pipe = sp_rec.stdout.take().unwrap();
     let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_SIZE);
-    let mut seg: Option<ActiveSegment> = None;
+    let mut pending_buf: Vec<u8> = Vec::with_capacity(CHUNK_SIZE * MIN_HOT_CHUNKS as usize);
+    // invariant: `pending_buf` is non-empty iff `state` is `Pending(_)`
+    enum State {
+        Quiet,
+        Pending(PendingSegment),
+        Active(ActiveSegment),
+    }
+    let mut state = State::Quiet;
     loop {
         chunk.clear();
         (&mut pipe)
@@ -177,20 +190,42 @@ fn main() -> anyhow::Result<()> {
             .read_to_end(&mut chunk)
             .context("Failed to read chunk from rec(1) pipe")?;
         let is_quiet = is_quiet(&chunk, threshold);
-        let mut cur_seg = match (is_quiet, &mut seg) {
-            (true, None) if chunk.is_empty() => break,
-            (true, None) => continue,
-            (_, Some(seg)) => seg,
-            (false, None) => {
+        let mut cur_seg = match (is_quiet, &mut state) {
+            (true, State::Quiet) if chunk.is_empty() => break,
+            (_, State::Active(seg)) => seg,
+            (true, State::Quiet) => continue,
+            (false, State::Quiet) => {
+                debug!("Mic is hot; segment is now pending");
                 let now = chrono::Local::now();
                 let id = now.format("%Y%m%dT%H%M%S").to_string();
+                assert!(pending_buf.is_empty());
+                pending_buf.extend(&chunk);
+                state = State::Pending(PendingSegment {
+                    id,
+                    consecutive_hot_chunks: 1,
+                });
+                continue;
+            }
+            (true, State::Pending(_)) => {
+                debug!("Mic is quiet; pending segment discarded");
+                pending_buf.clear();
+                state = State::Quiet;
+                continue;
+            }
+            (false, State::Pending(ref mut pending)) => {
+                pending.consecutive_hot_chunks += 1;
+                pending_buf.extend(&chunk);
+                if pending.consecutive_hot_chunks < MIN_HOT_CHUNKS {
+                    continue;
+                }
+                let id = std::mem::take(&mut pending.id);
                 let part_filename =
                     storage_dir.join(&format!("recording-{}.flac{}", id, PART_SUFFIX));
                 let local_filename =
                     storage_dir.join(&format!("recording-{}.flac{}", id, LOCAL_SUFFIX));
                 let final_filename = storage_dir.join(&format!("recording-{}.flac", id));
                 info!("Starting segment {}", id);
-                let sp_sox = Command::new("sox")
+                let mut sp_sox = Command::new("sox")
                     .arg("-q")
                     .args(RAW_AUDIO_ARGS)
                     .arg("-")
@@ -199,15 +234,25 @@ fn main() -> anyhow::Result<()> {
                     .stdin(Stdio::piped())
                     .spawn()
                     .context("Failed to spawn sox(1)")?;
-                seg.insert(ActiveSegment {
+                let encoder_stdin = sp_sox.stdin.as_mut().unwrap();
+                if let Err(e) = encoder_stdin.write_all(&pending_buf) {
+                    error!(
+                        "Failed to write initial backlog of segment {} to encoder: {}",
+                        id, e
+                    );
+                    // but carry on
+                }
+                state = State::Active(ActiveSegment {
                     id,
                     encoder: sp_sox,
                     part_filename,
                     local_filename,
                     final_filename,
-                    total_chunks: 0,
+                    total_chunks: pending.consecutive_hot_chunks,
                     consecutive_quiet_chunks: 0,
-                })
+                });
+                pending_buf.clear();
+                continue;
             }
         };
         let encoder_stdin = &mut cur_seg.encoder.stdin;
@@ -227,12 +272,12 @@ fn main() -> anyhow::Result<()> {
         };
         if is_quiet {
             if cur_seg.consecutive_quiet_chunks == 0 {
-                debug!("Mic is quiet");
+                debug!("Mic is quiet; segment is active");
             }
             cur_seg.consecutive_quiet_chunks += 1;
         } else {
             if cur_seg.consecutive_quiet_chunks > 0 {
-                debug!("Mic is hot");
+                debug!("Mic is hot; segment is active");
             }
             cur_seg.consecutive_quiet_chunks = 0;
         }
@@ -242,7 +287,13 @@ fn main() -> anyhow::Result<()> {
             || write_failed
         {
             encoder_stdin.take();
-            rt.spawn(finish_segment(seg.take().unwrap(), gcs.clone()));
+            rt.spawn(finish_segment(
+                match std::mem::replace(&mut state, State::Quiet) {
+                    State::Active(seg) => seg,
+                    _ => unreachable!(),
+                },
+                gcs.clone(),
+            ));
         }
         if chunk.is_empty() {
             break;
