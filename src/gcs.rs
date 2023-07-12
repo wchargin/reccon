@@ -3,18 +3,19 @@ use core::str::FromStr;
 use anyhow::Context as _;
 use gcp_auth::AuthenticationManager;
 
-pub struct GcsContext {
-    pub path: GcsPath,
+pub struct Client {
+    pub http: reqwest::Client,
+    pub path: Path,
     pub auth: AuthenticationManager,
 }
 
 #[derive(Debug)]
-pub struct GcsPath {
+pub struct Path {
     pub bucket: String,
     pub prefix: String,
 }
 
-impl FromStr for GcsPath {
+impl FromStr for Path {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -23,7 +24,7 @@ impl FromStr for GcsPath {
             .ok_or_else(|| anyhow::anyhow!("GCS path must start with \"gs://\", but got {s:?}"))?;
         let (bucket, prefix) = match s.split_once('/') {
             None => {
-                return Ok(GcsPath {
+                return Ok(Path {
                     bucket: s.to_string(),
                     prefix: String::new(),
                 })
@@ -33,17 +34,16 @@ impl FromStr for GcsPath {
         if !prefix.is_empty() && !prefix.ends_with('/') {
             anyhow::bail!("Non-empty GCS prefix must end with slash, but got {prefix:?}");
         }
-        Ok(GcsPath {
+        Ok(Path {
             bucket: bucket.into(),
             prefix: prefix.into(),
         })
     }
 }
 
-impl GcsContext {
+impl Client {
     pub async fn put(
         &self,
-        client: &reqwest::Client,
         name: &str,
         contents: Vec<u8>,
         content_type: &str,
@@ -61,7 +61,7 @@ impl GcsContext {
             &self.path.bucket,
             urlencoding::encode(&object_name)
         );
-        client
+        self.http
             .post(url)
             .header("Authorization", format!("Bearer {}", token.as_str()))
             .header("Content-Type", content_type)

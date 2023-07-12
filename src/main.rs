@@ -1,10 +1,11 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 mod config;
 mod gcs;
@@ -14,7 +15,9 @@ struct ActiveSegment {
     id: String,
     /// Filename used while this segment is still being actively recorded.
     part_filename: PathBuf,
-    /// Filename used once this segment has finished recording.
+    /// Filename used once this segment has finished recording but not been uploaded to GCS.
+    local_filename: PathBuf,
+    /// Filename used once this segment in its terminal state.
     final_filename: PathBuf,
     /// `sox(1)` subprocess writing to the file at `part_filename`.
     encoder: Child,
@@ -28,6 +31,7 @@ const MAX_TOTAL_CHUNKS: u32 = duration_to_chunks(Duration::from_secs(60 * 10));
 const MAX_QUIET_CHUNKS: u32 = duration_to_chunks(Duration::from_secs(5));
 
 const PART_SUFFIX: &str = ".part";
+const LOCAL_SUFFIX: &str = ".local";
 
 const RAW_AUDIO_ARGS: &[&str] = &[
     "-L", "-t", "raw", "-c", "1", "-e", "signed", "-b", "16", "-r", "48k",
@@ -62,7 +66,7 @@ fn read_config() -> anyhow::Result<config::Config> {
         .with_context(|| format!("Invalid config in {}", config_file.display()))
 }
 
-async fn finish_segment(mut seg: ActiveSegment) {
+async fn finish_segment(mut seg: ActiveSegment, gcs: Option<Arc<gcs::Client>>) {
     info!("Finishing segment {}", seg.id);
     match tokio::task::spawn_blocking(move || seg.encoder.wait())
         .await
@@ -72,9 +76,43 @@ async fn finish_segment(mut seg: ActiveSegment) {
         Ok(st) => error!("Encoder for segment {} exited unhealthy: {}", seg.id, st),
         Err(e) => error!("Failed to reap encoder for segment {}: {}", seg.id, e),
     }
-    if let Err(e) = std::fs::rename(seg.part_filename, seg.final_filename) {
-        warn!("Failed to finalize filename for segment {}: {}", seg.id, e);
+    if let Err(e) = tokio::fs::rename(&seg.part_filename, &seg.local_filename).await {
+        error!(
+            "Failed to mark segment {} as locally finished: {:#}",
+            seg.id, e
+        );
+        return;
     }
+    if let Some(gcs) = gcs {
+        let res = upload_segment(&seg.id, &seg.local_filename, &seg.final_filename, &gcs).await;
+        if let Err(e) = res {
+            error!("Failed to upload segment {} to GCS: {:#}", seg.id, e);
+        }
+    } else {
+        if let Err(e) = tokio::fs::rename(&seg.local_filename, &seg.final_filename).await {
+            error!(
+                "Failed to finalize filename for segment {}: {:#}",
+                seg.id, e
+            );
+        }
+    }
+}
+
+async fn upload_segment(
+    id: &str,
+    local_name: &Path,
+    final_name: &Path,
+    gcs: &gcs::Client,
+) -> anyhow::Result<()> {
+    let contents = tokio::fs::read(local_name)
+        .await
+        .with_context(|| format!("Failed to read segment from {}", local_name.display()))?;
+    gcs.put(&format!("{}.flac", id), contents, "audio/flac")
+        .await?;
+    tokio::fs::rename(local_name, final_name)
+        .await
+        .context("Failed to finalize filename")?;
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -110,27 +148,17 @@ fn main() -> anyhow::Result<()> {
 
     let gcs = match config.gcs_bucket.take() {
         None => None,
-        Some(bucket) => Some(rt.block_on(async {
-            let path: gcs::GcsPath = bucket.parse()?;
+        Some(bucket) => Some(Arc::new(rt.block_on(async {
+            let http = reqwest::Client::new();
+            let path: gcs::Path = bucket.parse()?;
             let auth = gcp_auth::AuthenticationManager::new()
                 .await
                 .with_context(|| {
                     format!("GCS bucket specified ({bucket}) but no valid credentials found")
                 })?;
-            Ok::<_, anyhow::Error>(gcs::GcsContext { path, auth })
-        })?),
+            Ok::<_, anyhow::Error>(gcs::Client { http, path, auth })
+        })?)),
     };
-
-    // for testing...
-    if let Some(gcs) = gcs {
-        let client = reqwest::Client::new();
-        rt.block_on(gcs.put(
-            &client,
-            "reckless-test/test-obj",
-            "hey\n".as_bytes().to_vec(),
-            "application/x-test",
-        ))?;
-    }
 
     let mut sp_rec = Command::new("rec")
         .arg("-q")
@@ -158,6 +186,8 @@ fn main() -> anyhow::Result<()> {
                 let id = now.format("%Y%m%dT%H%M%S").to_string();
                 let part_filename =
                     storage_dir.join(&format!("recording-{}.flac{}", id, PART_SUFFIX));
+                let local_filename =
+                    storage_dir.join(&format!("recording-{}.flac{}", id, LOCAL_SUFFIX));
                 let final_filename = storage_dir.join(&format!("recording-{}.flac", id));
                 info!("Starting segment {}", id);
                 let sp_sox = Command::new("sox")
@@ -173,6 +203,7 @@ fn main() -> anyhow::Result<()> {
                     id,
                     encoder: sp_sox,
                     part_filename,
+                    local_filename,
                     final_filename,
                     total_chunks: 0,
                     consecutive_quiet_chunks: 0,
@@ -211,7 +242,7 @@ fn main() -> anyhow::Result<()> {
             || write_failed
         {
             encoder_stdin.take();
-            rt.spawn(finish_segment(seg.take().unwrap()));
+            rt.spawn(finish_segment(seg.take().unwrap(), gcs.clone()));
         }
         if chunk.is_empty() {
             break;
