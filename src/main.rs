@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use log::{debug, error, info};
+use log::{debug, error, info, trace};
 
 mod config;
 mod gcs;
@@ -259,5 +259,6 @@ fn is_quiet(raw_audio: &[u8], threshold: i16) -> bool {
         .map(|z| z.abs())
         .max()
         .unwrap_or(0);
+    trace!("Max sample: {} <=> {}", max_sample, threshold);
     max_sample <= threshold
 }
