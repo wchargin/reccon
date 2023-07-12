@@ -175,6 +175,7 @@ fn main() -> anyhow::Result<()> {
         .context("Failed to spawn rec(1); is SoX installed?")?;
     let mut pipe = sp_rec.stdout.take().unwrap();
     let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_SIZE);
+    let mut last_chunk: Vec<u8> = Vec::with_capacity(CHUNK_SIZE);
     let mut pending_buf: Vec<u8> = Vec::with_capacity(CHUNK_SIZE * MIN_HOT_CHUNKS as usize);
     // invariant: `pending_buf` is non-empty iff `state` is `Pending(_)`
     enum State {
@@ -184,6 +185,8 @@ fn main() -> anyhow::Result<()> {
     }
     let mut state = State::Quiet;
     loop {
+        last_chunk.clear();
+        last_chunk.extend(&chunk);
         chunk.clear();
         (&mut pipe)
             .take(u64::try_from(CHUNK_SIZE).unwrap())
@@ -199,6 +202,7 @@ fn main() -> anyhow::Result<()> {
                 let now = chrono::Local::now();
                 let id = now.format("%Y%m%dT%H%M%S").to_string();
                 assert!(pending_buf.is_empty());
+                pending_buf.extend(&last_chunk);
                 pending_buf.extend(&chunk);
                 state = State::Pending(PendingSegment {
                     id,
@@ -248,7 +252,7 @@ fn main() -> anyhow::Result<()> {
                     part_filename,
                     local_filename,
                     final_filename,
-                    total_chunks: pending.consecutive_hot_chunks,
+                    total_chunks: pending.consecutive_hot_chunks + 1, /* for initial last_chunk */
                     consecutive_quiet_chunks: 0,
                 });
                 pending_buf.clear();
