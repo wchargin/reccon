@@ -163,6 +163,19 @@ fn main() -> anyhow::Result<()> {
         })?)),
     };
 
+    // for testing...
+    if let Some(ref gcs) = gcs {
+        rt.block_on(gcs.put_meta(
+            "reckless-test/test-obj",
+            b"hey\n\x01\x02\x03",
+            "application/x-test",
+            &serde_json::json!({
+                "my-meta": "fun time",
+            }),
+        ))?;
+        eprintln!("wrote test object");
+    }
+
     let mut sp_rec = Command::new("rec")
         .arg("-q")
         .args(RAW_AUDIO_ARGS)

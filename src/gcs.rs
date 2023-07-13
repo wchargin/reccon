@@ -72,4 +72,68 @@ impl Client {
             .context("Failed to upload to GCS")?;
         Ok(())
     }
+
+    /// Writes an object to GCS and sets its metadata.
+    ///
+    /// The `content_type` argument should be suitable for raw inclusion in an HTTP header.
+    pub async fn put_meta(
+        &self,
+        name: &str,
+        contents: &[u8],
+        content_type: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<(), anyhow::Error> {
+        const SCOPE: &str = "https://www.googleapis.com/auth/devstorage.read_write";
+        let token = self
+            .auth
+            .get_token(&[SCOPE])
+            .await
+            .context("Failed to get GCS auth token")?;
+
+        let object_name = format!("{}{}", &self.path.prefix, name);
+
+        let metadata = serde_json::json!({
+            "name": object_name,
+            "metadata": metadata,
+        });
+        let metadata =
+            serde_json::to_string(&metadata).context("Failed to serialize metadata to JSON")?;
+
+        let boundary: String = "xxxxxx-xxxxxx-xxxxxx-xxxxxx".into(); // TODO pick randomly and test
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(b"Content-Type: application/json; charset=UTF-8\r\n\r\n");
+        body.extend_from_slice(metadata.as_bytes());
+        body.extend_from_slice(b"\r\n\r\n");
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(b"Content-Type: ");
+        body.extend_from_slice(content_type.as_bytes());
+        body.extend_from_slice(b"\r\n\r\n");
+        body.extend_from_slice(contents);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(b"--\r\n");
+
+        let url = format!(
+            "https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=multipart",
+            urlencoding::encode(&self.path.bucket)
+        );
+        self.http
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token.as_str()))
+            .header(
+                "Content-Type",
+                format!("multipart/related; boundary={}", boundary),
+            )
+            .body(body)
+            .send()
+            .await
+            .and_then(|res| res.error_for_status())
+            .context("Failed to upload to GCS")?;
+        Ok(())
+    }
 }
