@@ -52,8 +52,7 @@ const fn duration_to_chunks(d: Duration) -> u32 {
 fn read_config() -> anyhow::Result<config::Config> {
     let arg = std::env::args_os().nth(1);
     let config_file = arg
-        .as_ref()
-        .map(|s| s.as_os_str())
+        .as_deref()
         .unwrap_or_else(|| std::ffi::OsStr::new(config::DEFAULT_FILENAME));
     let config_file = Path::new(config_file);
     let contents = match std::fs::read(config_file) {
