@@ -233,7 +233,7 @@ fn main() -> anyhow::Result<()> {
                     .arg("-q")
                     .args(RAW_AUDIO_ARGS)
                     .arg("-")
-                    .args(&["-t", "flac"])
+                    .args(&["-t", "flac", "--comment", ""])
                     .arg(&part_filename)
                     .stdin(Stdio::piped())
                     .spawn()
