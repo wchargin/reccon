@@ -93,13 +93,11 @@ async fn finish_segment(mut seg: ActiveSegment, gcs: Option<Arc<gcs::Client>>) {
         if let Err(e) = res {
             error!("Failed to upload segment {} to GCS: {:#}", seg.id, e);
         }
-    } else {
-        if let Err(e) = tokio::fs::rename(&seg.local_filename, &seg.final_filename).await {
-            error!(
-                "Failed to finalize filename for segment {}: {:#}",
-                seg.id, e
-            );
-        }
+    } else if let Err(e) = tokio::fs::rename(&seg.local_filename, &seg.final_filename).await {
+        error!(
+            "Failed to finalize filename for segment {}: {:#}",
+            seg.id, e
+        );
     }
 }
 
