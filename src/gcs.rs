@@ -58,7 +58,7 @@ impl Client {
         let object_name = format!("{}{}", &self.path.prefix, name);
         let url = format!(
             "https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}",
-            &self.path.bucket,
+            urlencoding::encode(&self.path.bucket),
             urlencoding::encode(&object_name)
         );
         self.http
