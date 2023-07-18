@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 
 mod config;
 mod gcs;
@@ -101,17 +101,59 @@ async fn finish_segment(mut seg: ActiveSegment, gcs: Option<Arc<gcs::Client>>) {
     }
 }
 
+/// Runs `soxi $query $file` and returns the output (with trailing whitespace trimmed).
+async fn soxi(query: &str, file: &Path) -> anyhow::Result<String> {
+    let output = tokio::process::Command::new("soxi")
+        .arg(query)
+        .arg(file)
+        .output()
+        .await?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to query soxi {:?} for {} ({}): {}",
+            query,
+            file.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut s: String = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
+    };
+    s.truncate(s.trim_end().len());
+    Ok(s)
+}
+
 async fn upload_segment(
     id: &str,
     local_name: &Path,
     final_name: &Path,
     gcs: &gcs::Client,
 ) -> anyhow::Result<()> {
-    let contents = tokio::fs::read(local_name)
-        .await
+    let contents = tokio::fs::read(local_name);
+    let samples = soxi("-s", local_name);
+    let sample_rate = soxi("-r", local_name);
+    let (contents, samples, sample_rate) = tokio::join!(contents, samples, sample_rate);
+
+    let contents = contents
         .with_context(|| format!("Failed to read segment from {}", local_name.display()))?;
-    gcs.put(&format!("{}.flac", id), contents, "audio/flac")
+
+    let mut metadata = serde_json::Map::new();
+    match samples {
+        Ok(v) => drop(metadata.insert("samples".to_string(), v.into())),
+        Err(e) => warn!("Couldn't measure sample count: {}", e),
+    };
+    match sample_rate {
+        Ok(v) => drop(metadata.insert("sample-rate".to_string(), v.into())),
+        Err(e) => warn!("Couldn't measure sample rate: {}", e),
+    };
+    let metadata = metadata.into();
+
+    let object_name = &format!("{}.flac", id);
+    gcs.put_meta(object_name, &contents, "audio/flac", &metadata)
         .await?;
+
     tokio::fs::rename(local_name, final_name)
         .await
         .context("Failed to finalize filename")?;
@@ -164,19 +206,6 @@ fn main() -> anyhow::Result<()> {
             Ok::<_, anyhow::Error>(gcs::Client { http, path, auth })
         })?)),
     };
-
-    // for testing...
-    if let Some(ref gcs) = gcs {
-        rt.block_on(gcs.put_meta(
-            "reckless-test/test-obj",
-            b"hey\n\x01\x02\x03",
-            "application/x-test",
-            &serde_json::json!({
-                "my-meta": "fun time",
-            }),
-        ))?;
-        eprintln!("wrote test object");
-    }
 
     let mut sp_rec = Command::new("rec")
         .arg("-q")
