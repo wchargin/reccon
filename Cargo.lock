@@ -695,6 +695,7 @@ dependencies = [
  "env_logger",
  "gcp_auth",
  "log",
+ "memchr",
  "rand",
  "reqwest",
  "serde",
