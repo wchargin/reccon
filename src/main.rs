@@ -154,11 +154,13 @@ fn main() -> anyhow::Result<()> {
         Some(bucket) => Some(Arc::new(rt.block_on(async {
             let http = reqwest::Client::new();
             let path: gcs::Path = bucket.parse()?;
+            log::debug!("Attempting to authenticate to GCS");
             let auth = gcp_auth::AuthenticationManager::new()
                 .await
                 .with_context(|| {
                     format!("GCS bucket specified ({bucket}) but no valid credentials found")
                 })?;
+            log::info!("Authenticated to GCS");
             Ok::<_, anyhow::Error>(gcs::Client { http, path, auth })
         })?)),
     };
