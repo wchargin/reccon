@@ -240,7 +240,7 @@ fn main() -> anyhow::Result<()> {
             (true, State::Quiet) => continue,
             (false, State::Quiet) => {
                 debug!("Mic is hot; segment is now pending");
-                let now = chrono::Local::now();
+                let now = chrono::Utc::now();
                 let id = now.format("%Y%m%dT%H%M%S").to_string();
                 assert!(pending_buf.is_empty());
                 pending_buf.extend(&last_chunk);
