@@ -99,7 +99,21 @@ impl Client {
         let metadata =
             serde_json::to_string(&metadata).context("Failed to serialize metadata to JSON")?;
 
-        let boundary: String = "xxxxxx-xxxxxx-xxxxxx-xxxxxx".into(); // TODO pick randomly and test
+        let boundary: String = loop {
+            let boundary = multipart_boundary();
+            use memchr::memmem::Finder;
+            let finder = Finder::new(boundary.as_bytes());
+            if finder.find(metadata.as_bytes()).is_some() {
+                continue;
+            }
+            if finder.find(content_type.as_bytes()).is_some() {
+                continue;
+            }
+            if finder.find(contents).is_some() {
+                continue;
+            }
+            break boundary;
+        };
         let mut body: Vec<u8> = Vec::new();
         body.extend_from_slice(b"--");
         body.extend_from_slice(boundary.as_bytes());
@@ -136,4 +150,13 @@ impl Client {
             .context("Failed to upload to GCS")?;
         Ok(())
     }
+}
+
+/// Generates a random boundary for a `multipart/related` (or similar) form.
+///
+/// This contains at least 128 bits of entropy, but the caller may still want to ensure that it
+/// doesn't happen to appear in the rest of the body.
+fn multipart_boundary() -> String {
+    let [a, b, c, d] = rand::random::<[u32; 4]>();
+    format!("{:08x}-{:08x}-{:08x}-{:08x}", a, b, c, d)
 }
