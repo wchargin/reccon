@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 mod config;
 mod gcs;
@@ -145,6 +145,10 @@ async fn upload_segment(
     let object_name = &format!("{}.flac", id);
     gcs.put_meta(object_name, &contents, "audio/flac", &metadata)
         .await?;
+    debug!(
+        "Uploaded to GCS: gs://{}/{}{}",
+        gcs.path.bucket, gcs.path.prefix, object_name
+    );
 
     tokio::fs::rename(local_name, final_name)
         .await
