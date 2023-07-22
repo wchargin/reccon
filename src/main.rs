@@ -9,6 +9,7 @@ use log::{debug, error, info, trace, warn};
 
 mod config;
 mod gcs;
+mod seg;
 
 struct PendingSegment {
     id: String,
