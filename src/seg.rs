@@ -49,6 +49,7 @@ enum State {
         consecutive_hot_chunks: u32,
     },
     Active {
+        started: bool,
         total_chunks: u32,
         consecutive_quiet_chunks: u32,
     },
@@ -74,10 +75,10 @@ impl Segmentation {
     pub fn accept<'a, F>(
         &'a mut self,
         chunk: &'a [u8],
-        gen_id: F,
+        mut gen_id: F,
     ) -> impl Iterator<Item = Event<'a>>
     where
-        F: FnOnce() -> String,
+        F: FnMut() -> String,
     {
         // TODO: Use or write an iterator implementation that doesn't allocate. We only need to
         // return, like, four events at max.
@@ -124,6 +125,7 @@ impl Segmentation {
                     events.push(Event::Start { id });
                     events.push(Event::Data(&self.pending_buf));
                     self.state = State::Active {
+                        started: true,
                         total_chunks: *total_chunks,
                         consecutive_quiet_chunks: 0,
                     };
@@ -136,11 +138,16 @@ impl Segmentation {
 
         // If active, emit this chunk and maybe terminate the segment.
         if let State::Active {
+            started,
             total_chunks,
             consecutive_quiet_chunks,
         } = &mut self.state
         {
             *total_chunks += 1;
+            if !*started {
+                events.push(Event::Start { id: gen_id() });
+                *started = true;
+            }
             events.push(Event::Data(chunk));
 
             if is_quiet {
@@ -155,13 +162,17 @@ impl Segmentation {
                 *consecutive_quiet_chunks = 0;
             }
 
-            if *total_chunks >= self.config.max_total_chunks
-                || *consecutive_quiet_chunks >= self.config.max_quiet_chunks
-                || chunk.is_empty()
-            {
+            if *consecutive_quiet_chunks >= self.config.max_quiet_chunks || chunk.is_empty() {
                 events.push(Event::End);
                 self.state = State::Quiet;
-                // TODO: If we hit the max chunks boundary, start a new segment immediately.
+            } else if *total_chunks >= self.config.max_total_chunks {
+                debug!("Segment exceeded max chunks; rolling over to new segment");
+                events.push(Event::End);
+                self.state = State::Active {
+                    started: false,
+                    total_chunks: 0,
+                    consecutive_quiet_chunks: *consecutive_quiet_chunks,
+                }
             }
         }
 
@@ -328,8 +339,18 @@ mod tests {
             test_events([Event::Data(&chunk_on), Event::End])
         );
 
-        // TODO: Fix so that this starts a new segment immediately.
-        assert_eq!(tb.accept(&chunk_on), vec![]);
+        let id1 = tb.ids.peek();
+        assert_eq!(
+            tb.accept(&chunk_on),
+            test_events([Event::Start { id: id1 }, Event::Data(&chunk_on)])
+        );
+        for _ in 2..=9 {
+            assert_eq!(tb.accept(&chunk_on), test_events([Event::Data(&chunk_on)]));
+        }
+        assert_eq!(
+            tb.accept(&chunk_on),
+            test_events([Event::Data(&chunk_on), Event::End])
+        );
     }
 
     #[test]
@@ -362,7 +383,17 @@ mod tests {
             test_events([Event::Data(&chunk_on), Event::End])
         );
 
-        // TODO: Fix so that this starts a new segment immediately.
-        assert_eq!(tb.accept(&chunk_on), vec![]);
+        let id1 = tb.ids.peek();
+        assert_eq!(
+            tb.accept(&chunk_on),
+            test_events([Event::Start { id: id1 }, Event::Data(&chunk_on)])
+        );
+        for _ in 2..=9 {
+            assert_eq!(tb.accept(&chunk_on), test_events([Event::Data(&chunk_on)]));
+        }
+        assert_eq!(
+            tb.accept(&chunk_on),
+            test_events([Event::Data(&chunk_on), Event::End])
+        );
     }
 }
