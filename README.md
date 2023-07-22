@@ -1,4 +1,4 @@
-# reckless
+# reccon 🦝
 
 Continuously record audio, segmenting against silence and (optionally)
 uploading audio to GCS.
@@ -55,11 +55,11 @@ $ cargo build --release
 In simplest form, just run the program with no arguments. It'll record
 FLAC files into `/tmp/recordings` (or your system's `$TMPDIR`).
 
-You can add a configuration file `reckless.toml` in the [TOML][] format
-to customize behavior:
+You can add a configuration file `reccon.toml` in the [TOML][] format to
+customize behavior:
 
 -   Set `storage_dir` to change the directory into which recordings will
-    be stored. **Note:** `reckless` assumes that it owns this directory
+    be stored. **Note:** `reccon` assumes that it owns this directory
     and will manage all its contents. If you have unrelated files in
     this directory, they may be overwritten or deleted.
 
@@ -75,11 +75,11 @@ to customize behavior:
     well-known path or service account credentials pointed to by the
     `GOOGLE_APPLICATION_CREDENTIALS` environment variable.
 
-To use a configuration file other than `./reckless.toml`, pass its path
-as the sole command-line argument.
+To use a configuration file other than `./reccon.toml`, pass its path as
+the sole command-line argument.
 
 [TOML]: https://toml.io/
 
 ## Etymology
 
-It's called `reckless` because it's like `rec` but records less.
+It's called `reccon` because it **rec**ords **con**tinuously.
