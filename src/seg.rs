@@ -1,15 +1,6 @@
 use std::fmt::Debug;
-use std::time::Duration;
 
 use log::{debug, trace};
-
-pub const BYTES_PER_CHUNK: usize = 16384;
-
-pub const fn duration_to_chunks(d: Duration) -> u32 {
-    const SAMPLES_PER_MS: u64 = 48;
-    const BYTES_PER_MS: u64 = SAMPLES_PER_MS * 2;
-    (d.as_millis() * BYTES_PER_MS as u128 / BYTES_PER_CHUNK as u128) as u32
-}
 
 #[derive(Debug, Clone)]
 pub struct Config {
