@@ -199,7 +199,7 @@ fn main() -> anyhow::Result<()> {
                     format!("GCS bucket specified ({bucket}) but no valid credentials found")
                 })?;
             log::info!("Authenticated to GCS");
-            Ok::<_, anyhow::Error>(gcs::Client { http, path, auth })
+            anyhow::Ok(gcs::Client { http, path, auth })
         })?)),
     };
 
