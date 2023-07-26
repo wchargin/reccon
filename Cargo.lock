@@ -552,8 +552,7 @@ checksum = "2b00cc1c228a6782d0f076e7b232802e0c5689d41bb5df366f2a6b6621cfdfe1"
 [[package]]
 name = "libsystemd"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88b9597a67aa1c81a6624603e6bd0bcefb9e0f94c9c54970ec53771082104b4e"
+source = "git+https://github.com/lucab/libsystemd-rs?rev=refs/pull/143/merge#e5d1547e9442395ca6a776d224f4f1ffbe960ff8"
 dependencies = [
  "hmac",
  "libc",

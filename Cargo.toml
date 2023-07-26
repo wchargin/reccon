@@ -20,3 +20,6 @@ systemd-journal-logger = "1.0.0"
 tokio = { version = "1.28.1", features = ["full"] }
 toml = "0.7.4"
 urlencoding = "2.1.2"
+
+[patch.crates-io]
+libsystemd = { git = "https://github.com/lucab/libsystemd-rs", rev = "refs/pull/143/merge", version = "0.6.0" }
