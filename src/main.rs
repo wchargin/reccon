@@ -157,8 +157,7 @@ async fn upload_segment(
 }
 
 fn main() -> anyhow::Result<()> {
-    use env_logger::{Builder, Env};
-    Builder::from_env(Env::default().default_filter_or(log::LevelFilter::Info.to_string())).init();
+    init_logging();
 
     let mut config = read_config()?;
     let threshold = (config.threshold.unwrap_or(0.25).clamp(0.0, 1.0) * f64::from(i16::MAX)) as i16;
@@ -282,4 +281,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn init_logging() {
+    use env_logger::{Builder, Env};
+    use systemd_journal_logger::{connected_to_journal, JournalLog};
+
+    if connected_to_journal() {
+        JournalLog::default().install().unwrap();
+        log::set_max_level(log::LevelFilter::Debug);
+    } else {
+        Builder::from_env(Env::default().default_filter_or(log::LevelFilter::Info.to_string()))
+            .init();
+    }
 }
