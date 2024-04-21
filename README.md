@@ -80,6 +80,64 @@ the sole command-line argument.
 
 [TOML]: https://toml.io/
 
+## Installation on a dedicated system
+
+This is my best-effort recollection of how to get this thing working on
+a dedicated Raspberry Pi (I use a first-generation Zero W). I'm assuming
+that the Pi is reachable as `raspiano` on your network.
+
+First, build for ARM (not ARMv7) and ship over the binary:
+
+```
+cross build --release --target arm-unknown-linux-gnueabihf
+rsync --info=progress2 target/arm-unknown-linux-gnueabihf/release/reccon pi@raspiano:~/reccon
+```
+
+(I use `rsync` and not `scp` because it works better even when the
+remote program is currently being executed, instead of failing with
+`ETXTBSY`.)
+
+Follow the instructions at <https://superuser.com/a/1045885> to disable
+the on-board sound card and use the USB DAC by default:
+
+```
+# follow instructions at https://superuser.com/a/1045885
+echo blacklist snd_bcm2835 | sudo tee -a /etc/modprobe.d/blacklist-snd_bcm2835.conf
+sudo sed -i -e '/snd-usb-audio index=-2/ s/^/#/' /lib/modprobe.d/aliases.conf
+```
+
+Create a systemd unit file in `/etc/systemd/system/reccon.service`:
+
+```
+[Unit]
+Description=Continuous audio recorder
+After=network-online.target sound.target
+Wants=network-online.target sound.target
+
+[Service]
+ExecStart=/home/pi/start.sh
+WorkingDirectory=/home/pi
+User=pi
+Group=pi
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create the systemd symlinks:
+
+```
+sudo systemctl enable reccon
+```
+
+It should now launch on boot. Use `systemctl restart reccon` to poke it.
+I've had lots of issues with it nondeterministically sometimes not
+starting or starting but then failing because it doesn't see the sound
+card. I don't know if that's because ALSA doesn't recognize the sound
+card if it was plugged in at boot (sometimes), or because `reccon` /
+`rec(1)` starts before ALSA. I just recently added the `sound.target`
+unit to the `After=` and `Wants=` and am hoping that this helps.
+
 ## Etymology
 
 It's called `reccon` because it **rec**ords **con**tinuously.
