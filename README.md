@@ -1,7 +1,9 @@
-# reccon 🦝
+# reccon [🦝][racc]
 
 Continuously record audio, segmenting against silence and (optionally)
 uploading audio to GCS.
+
+[racc]: https://www.gstatic.com/android/keyboard/emojikitchen/20211115/u1f99d/u1f99d_u1f3a7.png
 
 ## Motivation
 
